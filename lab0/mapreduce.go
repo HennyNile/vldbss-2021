@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"hash/fnv"
 	"io/ioutil"
@@ -87,7 +86,6 @@ func (c *MRCluster) worker() {
 		select {
 		case t := <-c.taskCh:
 			if t.phase == mapPhase {
-				// fmt.Println("mapPhase:", t.dataDir, t.jobName, t.taskNumber)
 				content, err := ioutil.ReadFile(t.mapFile)
 				if err != nil {
 					panic(err)
@@ -110,17 +108,17 @@ func (c *MRCluster) worker() {
 					SafeClose(fs[i], bs[i])
 				}
 			} else if t.phase == reducePhase {
-				// fmt.Println("reducePhase:", t.dataDir, t.jobName, t.taskNumber)
-				
 				// read data from tmp file of map phase
-				contents := make([][]byte, t.nMap)
+				var kv KeyValue
+				reduceMap := make(map[string][]string)
 				for i := 0; i < t.nMap; i++ {
 					rpath := reduceName(t.dataDir, t.jobName, i, t.taskNumber)
-					content, err := ioutil.ReadFile(rpath)
-					if err != nil {
-						panic(err)
+					reader, _ := os.Open(rpath)
+					decoder := json.NewDecoder(reader)
+					for decoder.More() {
+						decoder.Decode(&kv)
+						reduceMap[kv.Key] = append(reduceMap[kv.Key], kv.Value)
 					}
-					contents[i] = content
 				}
 
 				// create tmp file for reduce phase 
@@ -128,30 +126,12 @@ func (c *MRCluster) worker() {
 				respath := mergeName(t.dataDir, t.jobName, t.taskNumber) 
 				_, bs = CreateFileAndBuf(respath)
 
-				// reduce result of map
-				//var stringValues []string
-				var lines [][]byte
-				var kv KeyValue
-				reduceMap := make(map[string][]string)
-				for _, cont := range contents{
-					lines = bytes.Split(cont, []byte("\n"))
-					lines = lines[:len(lines)-1]
-					// fmt.Println(len(lines), "records in file")
-					for _, l := range lines {
-						json.Unmarshal(l, &kv)
-						if len(kv.Key+kv.Value) != 0 {
-							reduceMap[kv.Key] = append(reduceMap[kv.Key], kv.Value)
-						}
-					}
-				}
-	
 				// run reduce function and output result
-				// sort.Strings(reduceMapKeys)
 				for k, v := range reduceMap {
 					results := t.reduceF(k, v)
 					bs.Write([]byte(results))
 				}
-				bs.Flush()								
+				bs.Flush()			
 			}
 			t.wg.Done()
 		case <-c.exit:
@@ -176,7 +156,7 @@ func (c *MRCluster) Submit(jobName, dataDir string, mapF MapF, reduceF ReduceF, 
 func (c *MRCluster) run(jobName, dataDir string, mapF MapF, reduceF ReduceF, mapFiles []string, nReduce int, notify chan<- []string) {
 	// map phase
 	nMap := len(mapFiles)
-	mapTasks := make([]*task, 0, nMap)
+	tasks := make([]*task, 0, nMap)
 	for i := 0; i < nMap; i++ {
 		t := &task{
 			dataDir:    dataDir,
@@ -189,15 +169,15 @@ func (c *MRCluster) run(jobName, dataDir string, mapF MapF, reduceF ReduceF, map
 			mapF:       mapF,
 		}
 		t.wg.Add(1)
-		mapTasks = append(mapTasks, t)
+		tasks = append(tasks, t)
 		go func() { c.taskCh <- t }()
 	}
-	for _, t := range mapTasks {
+	for _, t := range tasks {
 		t.wg.Wait()
 	}
 
 	// reduce phase
-	reduceTasks := make([]*task, 0, nReduce)
+	tasks = []*task{}
 	var respaths []string
 	for j := 0; j < nReduce; j++ {
 		t := &task{
@@ -210,11 +190,11 @@ func (c *MRCluster) run(jobName, dataDir string, mapF MapF, reduceF ReduceF, map
 			reduceF:    reduceF,
 		}
 		t.wg.Add(1)
-		reduceTasks = append(reduceTasks, t)
+		tasks = append(tasks, t)
 		go func() { c.taskCh <- t }()
 		respaths = append(respaths, mergeName(dataDir, jobName, j))
 	}
-	for _, t := range reduceTasks {
+	for _, t := range tasks {
 		t.wg.Wait()
 	}
 	notify <- respaths
