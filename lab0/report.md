@@ -6,9 +6,13 @@
 
 `make test_example` 的实验截图
 
+![test_example_result](report/test_example.png)
+
 ### 2. 基于 Map-Reduce 框架编写 Map-Reduce 函数
 
 `make test_homework` 的实验截图
+
+![test_homework_result](report/test_homework.png)
 
 ## 实验总结
 
